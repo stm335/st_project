@@ -32,9 +32,6 @@ DATA_FILE = (
 # 폐교 기록 개수가 이 값보다 적으면 데이터 부족으로 판단
 MIN_RECORDS = 5
 
-# 측정 기간이 이 값보다 짧으면 안내 문구 표시
-MIN_MEASURED_YEARS = 20
-
 
 # ==========================================
 # 2. 데이터 불러오기
@@ -84,10 +81,8 @@ def load_data(file_path):
     for col in required_columns:
         df[col] = df[col].astype("string").str.strip()
 
-    # --------------------------------------
     # 폐교일자 날짜 변환
     # YYYYMMDD 형식과 일반 날짜 형식을 처리
-    # --------------------------------------
     date_text = (
         df["폐교일자"]
         .astype("string")
@@ -230,6 +225,12 @@ is_low_data = record_count < MIN_RECORDS
 # ==========================================
 # 6. 연도별 폐교 학교 수 계산
 # ==========================================
+
+# 전국 데이터에서 가장 이른 연도와 가장 늦은 연도
+first_year = int(df["폐교연도"].min())
+last_year = int(df["폐교연도"].max())
+
+# 선택한 지역의 연도별 폐교 학교 수
 yearly_count = (
     region_df
     .groupby("폐교연도")
@@ -237,34 +238,19 @@ yearly_count = (
     .sort_index()
 )
 
-# 기록이 있는 가장 이른 연도와 가장 늦은 연도
-first_year = int(yearly_count.index.min())
-last_year = int(yearly_count.index.max())
-
-# 측정 기간: 시작 연도와 마지막 연도를 모두 포함
-measured_years = last_year - first_year + 1
-
-# 기록이 없는 연도도 0으로 표시
+# 전국 데이터의 전체 연도 범위 생성
 all_years = np.arange(
     first_year,
     last_year + 1
 )
 
+# 선택한 지역에 기록이 없는 연도는 0으로 표시
 yearly_count = yearly_count.reindex(
     all_years,
     fill_value=0
 )
 
 yearly_count.index.name = "연도"
-
-# 측정 기간이 20년 미만이면 안내 문구 표시
-if measured_years < MIN_MEASURED_YEARS:
-    st.warning(
-        f"⚠️ {selected_region} 지역의 전체 측정 기간은 "
-        f"{measured_years}년({first_year}~{last_year}년)으로 "
-        f"20년보다 짧습니다. "
-        "분석 및 미래 예측 결과는 참고용으로만 확인해주세요."
-    )
 
 
 # ==========================================
@@ -414,7 +400,7 @@ st.plotly_chart(
 
 
 # ==========================================
-# 10. 데이터 부족 및 그래프 해석 안내
+# 10. 데이터 부족 안내
 # ==========================================
 if is_low_data:
     st.warning(
@@ -422,12 +408,6 @@ if is_low_data:
         f"{record_count}개로, 예측에 필요한 데이터가 부족합니다. "
         "선형회귀 결과는 참고용으로만 확인해주세요."
     )
-
-st.info(
-    "그래프에서 폐교 학교 수가 0으로 표시된 연도는 "
-    "해당 연도의 폐교 기록이 데이터에 없다는 뜻입니다. "
-    "실제로 폐교 학교가 없었다는 의미는 아닙니다."
-)
 
 
 # ==========================================

@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -30,8 +29,11 @@ DATA_FILE = (
     / "한국교육학술정보원_학교알리미 폐교정보_20250930.csv"
 )
 
-# 폐교 기록이 이 개수보다 적으면 데이터 부족으로 판단
+# 폐교 기록 개수가 이 값보다 적으면 데이터 부족으로 판단
 MIN_RECORDS = 5
+
+# 측정 기간이 이 값보다 짧으면 안내 문구 표시
+MIN_MEASURED_YEARS = 20
 
 
 # ==========================================
@@ -82,11 +84,33 @@ def load_data(file_path):
     for col in required_columns:
         df[col] = df[col].astype("string").str.strip()
 
-    # 폐교일자를 날짜 형식으로 변환
-    df["폐교일자"] = pd.to_datetime(
-        df["폐교일자"],
+    # --------------------------------------
+    # 폐교일자 날짜 변환
+    # YYYYMMDD 형식과 일반 날짜 형식을 처리
+    # --------------------------------------
+    date_text = (
+        df["폐교일자"]
+        .astype("string")
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+    )
+
+    # 우선 YYYYMMDD 형식으로 변환
+    parsed_date = pd.to_datetime(
+        date_text,
+        format="%Y%m%d",
         errors="coerce"
     )
+
+    # YYYY-MM-DD 등 다른 형식은 일반 날짜 변환으로 처리
+    remaining_dates = parsed_date.isna()
+
+    parsed_date.loc[remaining_dates] = pd.to_datetime(
+        date_text.loc[remaining_dates],
+        errors="coerce"
+    )
+
+    df["폐교일자"] = parsed_date
 
     # 날짜가 없거나 변환되지 않은 행 제거
     df = df.dropna(
@@ -100,9 +124,7 @@ def load_data(file_path):
     ].copy()
 
     # 폐교 연도 추출
-    df["폐교연도"] = (
-        df["폐교일자"].dt.year.astype(int)
-    )
+    df["폐교연도"] = df["폐교일자"].dt.year.astype(int)
 
     return df
 
@@ -111,9 +133,7 @@ def load_data(file_path):
 # 3. 데이터 자동 불러오기
 # ==========================================
 if not DATA_FILE.exists():
-    st.error(
-        "폐교 데이터 파일을 찾을 수 없습니다."
-    )
+    st.error("폐교 데이터 파일을 찾을 수 없습니다.")
 
     st.write(
         "main.py와 CSV 파일이 같은 폴더에 있는지 확인해주세요."
@@ -217,10 +237,17 @@ yearly_count = (
     .sort_index()
 )
 
+# 기록이 있는 가장 이른 연도와 가장 늦은 연도
+first_year = int(yearly_count.index.min())
+last_year = int(yearly_count.index.max())
+
+# 측정 기간: 시작 연도와 마지막 연도를 모두 포함
+measured_years = last_year - first_year + 1
+
 # 기록이 없는 연도도 0으로 표시
 all_years = np.arange(
-    int(yearly_count.index.min()),
-    int(yearly_count.index.max()) + 1
+    first_year,
+    last_year + 1
 )
 
 yearly_count = yearly_count.reindex(
@@ -229,6 +256,15 @@ yearly_count = yearly_count.reindex(
 )
 
 yearly_count.index.name = "연도"
+
+# 측정 기간이 20년 미만이면 안내 문구 표시
+if measured_years < MIN_MEASURED_YEARS:
+    st.warning(
+        f"⚠️ {selected_region} 지역의 전체 측정 기간은 "
+        f"{measured_years}년({first_year}~{last_year}년)으로 "
+        f"20년보다 짧습니다. "
+        "분석 및 미래 예측 결과는 참고용으로만 확인해주세요."
+    )
 
 
 # ==========================================
@@ -244,8 +280,6 @@ model.fit(X, y)
 historical_prediction = model.predict(X)
 
 # 미래 예측 연도
-last_year = int(yearly_count.index.max())
-
 future_years = np.arange(
     last_year + 1,
     last_year + forecast_years + 1

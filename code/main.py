@@ -1,444 +1,519 @@
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+from sklearn.linear_model import LinearRegression
 from pathlib import Path
 
-import pandas as pd
-import plotly.express as px
-import streamlit as st
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, r2_score
 
-
-# --------------------------------------------------
-# 기본 설정
-# --------------------------------------------------
+# ==========================================
+# 1. 앱 기본 설정
+# ==========================================
 st.set_page_config(
-    page_title="🏫 폐교 예측 분석",
+    page_title="폐교 예측 분석",
     page_icon="🏫",
-    layout="wide",
+    layout="wide"
 )
 
 st.title("🏫 폐교 예측 분석")
-st.caption("지역별 폐교 기록을 바탕으로 연도별 추세를 확인하고 미래 폐교 수를 예측합니다.")
+
+st.caption(
+    "전국 폐교 데이터를 바탕으로 지역별 폐교 추세를 분석하고 "
+    "선형회귀 모델로 미래 폐교 학교 수를 예측합니다."
+)
+
+# main.py와 같은 폴더에 있는 CSV 파일
+DATA_FILE = (
+    Path(__file__).parent
+    / "한국교육학술정보원_학교알리미 폐교정보_20250930.csv"
+)
+
+# 폐교 기록이 이 개수보다 적으면 데이터 부족으로 판단
+MIN_RECORDS = 5
 
 
-# --------------------------------------------------
-# 데이터 파일 설정 및 불러오기
-# --------------------------------------------------
-CSV_FILE = Path(__file__).parent / "한국교육학술정보원_학교알리미 폐교정보_20250930.csv"
-
-REQUIRED_COLUMNS = [
-    "지역",
-    "교육청",
-    "학교명",
-    "학교급명",
-    "폐교일자",
-    "주소",
-]
-
-
+# ==========================================
+# 2. 데이터 불러오기
+# ==========================================
 @st.cache_data
-def load_data():
-    if not CSV_FILE.exists():
-        raise FileNotFoundError(
-            f"CSV 파일을 찾을 수 없습니다: {CSV_FILE.name}"
-        )
+def load_data(file_path):
+    """CSV 파일을 읽고 분석에 필요한 열을 정리합니다."""
 
-    # 학교알리미 CSV가 cp949로 저장된 경우를 고려
-    try:
-        raw = pd.read_csv(CSV_FILE, encoding="cp949")
-    except UnicodeDecodeError:
-        raw = pd.read_csv(CSV_FILE, encoding="utf-8-sig")
+    df = pd.read_csv(
+        file_path,
+        encoding="cp949",
+        dtype=str
+    )
 
+    # 실제 CSV 열 이름을 앱에서 사용할 이름으로 변경
+    df = df.rename(columns={
+        "지역": "도",
+        "교육청": "세부지역",
+        "학교명": "학교 이름",
+        "학교급명": "학교급"
+    })
+
+    required_columns = [
+        "도",
+        "세부지역",
+        "학교 이름",
+        "학교급",
+        "폐교일자",
+        "주소"
+    ]
+
+    # 필요한 열이 모두 있는지 확인
     missing_columns = [
-        column for column in REQUIRED_COLUMNS
-        if column not in raw.columns
+        col for col in required_columns
+        if col not in df.columns
     ]
 
     if missing_columns:
         raise ValueError(
-            "CSV에 필요한 열이 없습니다: "
-            + ", ".join(missing_columns)
+            f"필요한 열이 없습니다: {missing_columns}"
         )
 
-    # 지역별 결측률은 원본 데이터에서 계산
-    missing_by_region = {}
+    # 필요한 열만 사용
+    df = df[required_columns].copy()
 
-    for region, group in raw.groupby("지역", dropna=False):
-        total_cells = group[REQUIRED_COLUMNS].size
-        missing_cells = group[REQUIRED_COLUMNS].isna().sum().sum()
+    # 문자열 앞뒤 공백 제거
+    for col in required_columns:
+        df[col] = df[col].astype("string").str.strip()
 
-        missing_rate = (
-            missing_cells / total_cells
-            if total_cells > 0
-            else 0
-        )
-
-        region_name = (
-            str(region).strip()
-            if pd.notna(region)
-            else "지역 미상"
-        )
-
-        missing_by_region[region_name] = missing_rate
-
-    df = raw.copy()
-
-    # 날짜 처리
+    # 폐교일자를 날짜 형식으로 변환
     df["폐교일자"] = pd.to_datetime(
         df["폐교일자"],
         errors="coerce"
     )
 
-    # 날짜가 없는 행은 연도별 분석에서 제외
-    df = df.dropna(subset=["폐교일자"]).copy()
-    df["연도"] = df["폐교일자"].dt.year.astype(int)
+    # 날짜가 없거나 변환되지 않은 행 제거
+    df = df.dropna(
+        subset=["도", "학교 이름", "폐교일자"]
+    )
 
-    # 지역 이름 앞뒤 공백 제거
-    df["지역"] = df["지역"].astype("string").str.strip()
+    # 도와 학교 이름이 없는 행 제거
+    df = df[
+        (df["도"] != "") &
+        (df["학교 이름"] != "")
+    ].copy()
 
-    return df, missing_by_region
+    # 폐교 연도 추출
+    df["폐교연도"] = (
+        df["폐교일자"].dt.year.astype(int)
+    )
+
+    return df
+
+
+# ==========================================
+# 3. 데이터 자동 불러오기
+# ==========================================
+if not DATA_FILE.exists():
+    st.error(
+        "폐교 데이터 파일을 찾을 수 없습니다."
+    )
+
+    st.write(
+        "main.py와 CSV 파일이 같은 폴더에 있는지 확인해주세요."
+    )
+
+    st.code(
+        "main.py\n"
+        "한국교육학술정보원_학교알리미 폐교정보_20250930.csv"
+    )
+
+    st.stop()
 
 
 try:
-    df, missing_by_region = load_data()
-except Exception as error:
-    st.error("데이터를 불러오지 못했습니다. CSV 파일명과 열 이름을 확인해 주세요.")
-    st.exception(error)
+    df = load_data(DATA_FILE)
+
+except Exception as e:
+    st.error(
+        f"데이터를 불러오는 중 오류가 발생했습니다: {e}"
+    )
     st.stop()
 
 
 if df.empty:
-    st.error("폐교일자를 확인할 수 있는 데이터가 없습니다.")
+    st.error("분석할 수 있는 폐교 데이터가 없습니다.")
     st.stop()
 
 
-# --------------------------------------------------
-# 전체 데이터 요약
-# --------------------------------------------------
+# ==========================================
+# 4. 전국 폐교 현황
+# ==========================================
+st.subheader("📊 전국 폐교 현황")
+
 col1, col2, col3 = st.columns(3)
 
-col1.metric("전체 폐교 기록", f"{len(df):,}건")
-col2.metric("지역 수", f"{df['지역'].nunique():,}개")
-col3.metric(
-    "데이터에 포함된 연도",
-    f"{df['연도'].min()}~{df['연도'].max()}년"
-)
-
-st.divider()
-
-
-# --------------------------------------------------
-# 지역 선택
-# --------------------------------------------------
-st.subheader("📍 지역 선택")
-
-regions = sorted(df["지역"].dropna().unique().tolist())
-
-if not regions:
-    st.error("선택할 수 있는 지역이 없습니다.")
-    st.stop()
-
-selected_region = st.selectbox(
-    "분석할 지역을 선택하세요.",
-    options=regions,
-)
-
-region_df = df[df["지역"] == selected_region].copy()
-
-
-# --------------------------------------------------
-# 결측률 확인
-# --------------------------------------------------
-missing_rate = missing_by_region.get(selected_region, 0)
-
-st.write(f"선택 지역의 원본 데이터 결측률: **{missing_rate:.1%}**")
-
-if missing_rate >= 0.30:
-    st.error(
-        f"{selected_region} 지역은 결측률이 30% 이상이므로 "
-        "분석 결과를 신뢰하기 어렵습니다."
+with col1:
+    st.metric(
+        "전체 폐교 학교 수",
+        f"{len(df):,}개"
     )
-    st.subheader("결측치")
-    st.info("이 지역은 결측률 기준에 따라 폐교 수 예측을 진행하지 않습니다.")
-    st.stop()
+
+with col2:
+    st.metric(
+        "분석 대상 지역",
+        f"{df['도'].nunique()}개"
+    )
+
+with col3:
+    st.metric(
+        "폐교 기록 기간",
+        f"{df['폐교연도'].min()}~{df['폐교연도'].max()}년"
+    )
 
 
-# --------------------------------------------------
-# 연도별 폐교 수 계산
-# --------------------------------------------------
-yearly_counts = (
-    region_df.groupby("연도")
+# ==========================================
+# 5. 분석 조건 설정
+# ==========================================
+st.subheader("🔎 분석 조건")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    regions = sorted(
+        df["도"].dropna().unique().tolist()
+    )
+
+    selected_region = st.selectbox(
+        "분석할 지역 선택",
+        regions
+    )
+
+with col2:
+    forecast_years = st.slider(
+        "미래 예측 기간",
+        min_value=1,
+        max_value=20,
+        value=5,
+        step=1
+    )
+
+
+# 선택한 지역의 데이터
+region_df = df[
+    df["도"] == selected_region
+].copy()
+
+# 선택한 지역의 폐교 기록 개수
+record_count = len(region_df)
+
+# 데이터 부족 여부
+is_low_data = record_count < MIN_RECORDS
+
+
+# ==========================================
+# 6. 연도별 폐교 학교 수 계산
+# ==========================================
+yearly_count = (
+    region_df
+    .groupby("폐교연도")
     .size()
     .sort_index()
 )
 
-# 데이터 전체에서 가장 이른 연도부터 가장 늦은 연도까지 연도 축 생성
-# 해당 연도에 폐교 기록이 없으면 0으로 표시
-all_years = range(
-    int(df["연도"].min()),
-    int(df["연도"].max()) + 1
+# 기록이 없는 연도도 0으로 표시
+all_years = np.arange(
+    int(yearly_count.index.min()),
+    int(yearly_count.index.max()) + 1
 )
 
-yearly_counts = (
-    yearly_counts
-    .reindex(all_years, fill_value=0)
-    .astype(int)
+yearly_count = yearly_count.reindex(
+    all_years,
+    fill_value=0
 )
 
-yearly_df = pd.DataFrame({
-    "연도": yearly_counts.index,
-    "폐교 수": yearly_counts.values,
-})
+yearly_count.index.name = "연도"
 
 
-# --------------------------------------------------
-# 측정 연도 수 확인
-# --------------------------------------------------
-# 폐교 기록이 실제로 있는 연도만 측정 연도로 계산
-measured_year_count = int((yearly_counts > 0).sum())
-
-st.subheader("📊 데이터 충분성 확인")
-
-st.metric(
-    "폐교 기록이 있는 연도 수",
-    f"{measured_year_count}년",
-)
-
-if measured_year_count < 20:
-    st.warning(
-        f"데이터가 충분하지 않습니다. "
-        f"{selected_region} 지역은 폐교 기록이 있는 연도가 "
-        f"{measured_year_count}년입니다. "
-        "(예측 기준: 20년 이상)"
-    )
-else:
-    st.success(
-        f"{selected_region} 지역은 폐교 기록이 있는 연도가 "
-        f"{measured_year_count}년입니다."
-    )
-
-st.caption(
-    "※ 여기서 ‘폐교 기록이 있는 연도’는 해당 연도에 폐교 기록이 1건 이상 있는 연도입니다. "
-    "폐교가 없었던 연도와 자료가 수집되지 않은 연도는 이 데이터만으로 구분할 수 없습니다."
-)
-
-
-# --------------------------------------------------
-# 연도별 폐교 수 그래프
-# --------------------------------------------------
-st.subheader("📈 연도별 폐교 수")
-
-fig = px.bar(
-    yearly_df,
-    x="연도",
-    y="폐교 수",
-    title=f"{selected_region} 연도별 폐교 수",
-    labels={
-        "연도": "연도",
-        "폐교 수": "폐교 수",
-    },
-)
-
-fig.update_layout(
-    xaxis=dict(dtick=1),
-    yaxis_title="폐교 수",
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-
-# --------------------------------------------------
-# 예측 기간 설정
-# --------------------------------------------------
-st.subheader("🔮 미래 폐교 수 예측")
-
-forecast_years = st.slider(
-    "몇 년 뒤까지 예측할까요?",
-    min_value=1,
-    max_value=20,
-    value=5,
-)
-
-
-# --------------------------------------------------
-# 예측 수행
-# --------------------------------------------------
-# 실제 폐교 기록이 있는 연도만 모델 학습에 사용
-training_df = yearly_df[yearly_df["폐교 수"] > 0].copy()
-
-if len(training_df) < 2:
-    st.warning(
-        "예측 모델을 만들려면 폐교 기록이 있는 연도가 최소 2년 필요합니다."
-    )
-    st.stop()
-
-X = training_df[["연도"]]
-y = training_df["폐교 수"]
+# ==========================================
+# 7. 선형회귀 모델 생성
+# ==========================================
+X = yearly_count.index.to_numpy().reshape(-1, 1)
+y = yearly_count.to_numpy()
 
 model = LinearRegression()
 model.fit(X, y)
 
-# 모델 성능 지표
-train_predictions = model.predict(X)
-mae = mean_absolute_error(y, train_predictions)
+# 과거 추세선
+historical_prediction = model.predict(X)
 
-if len(training_df) >= 2 and y.nunique() > 1:
-    r2 = r2_score(y, train_predictions)
-else:
-    r2 = None
+# 미래 예측 연도
+last_year = int(yearly_count.index.max())
 
-
-# --------------------------------------------------
-# 미래 예측 결과
-# --------------------------------------------------
-last_year = int(df["연도"].max())
-
-future_years = list(
-    range(last_year + 1, last_year + forecast_years + 1)
+future_years = np.arange(
+    last_year + 1,
+    last_year + forecast_years + 1
 )
 
-future_df = pd.DataFrame({
-    "연도": future_years,
+# 미래 폐교 학교 수 예측
+future_prediction = model.predict(
+    future_years.reshape(-1, 1)
+)
+
+# 폐교 학교 수는 음수가 될 수 없으므로 0 미만은 0으로 처리
+future_prediction = np.maximum(
+    future_prediction,
+    0
+)
+
+
+# ==========================================
+# 8. 지역별 통계
+# ==========================================
+total_closed = len(region_df)
+
+average_closed = yearly_count.mean()
+
+peak_year = int(yearly_count.idxmax())
+peak_count = int(yearly_count.max())
+
+future_total = int(
+    np.round(future_prediction.sum())
+)
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        "누적 폐교 학교 수",
+        f"{total_closed:,}개"
+    )
+
+with col2:
+    st.metric(
+        "연평균 폐교 학교 수",
+        f"{average_closed:.1f}개"
+    )
+
+with col3:
+    st.metric(
+        "폐교가 가장 많았던 연도",
+        f"{peak_year}년"
+    )
+
+with col4:
+    st.metric(
+        "예측 기간 폐교 학교 수",
+        f"{future_total:,}개"
+    )
+
+
+# ==========================================
+# 9. 폐교 학교 수 그래프
+# ==========================================
+st.subheader(
+    f"📈 {selected_region} 연도별 폐교 학교 수"
+)
+
+fig = go.Figure()
+
+# 실제 폐교 학교 수
+fig.add_trace(
+    go.Scatter(
+        x=yearly_count.index,
+        y=yearly_count.values,
+        mode="lines+markers",
+        name="실제 폐교 학교 수",
+        line=dict(width=2),
+        marker=dict(size=6)
+    )
+)
+
+# 선형회귀 과거 추세선
+fig.add_trace(
+    go.Scatter(
+        x=yearly_count.index,
+        y=np.maximum(historical_prediction, 0),
+        mode="lines",
+        name="선형회귀 추세선",
+        line=dict(
+            color="red",
+            width=2,
+            dash="dash"
+        )
+    )
+)
+
+# 미래 예측
+fig.add_trace(
+    go.Scatter(
+        x=future_years,
+        y=future_prediction,
+        mode="lines+markers",
+        name="미래 예측",
+        line=dict(
+            color="green",
+            width=3,
+            dash="dot"
+        ),
+        marker=dict(size=8)
+    )
+)
+
+fig.update_layout(
+    xaxis_title="연도",
+    yaxis_title="폐교 학교 수",
+    hovermode="x unified",
+    height=500,
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="left",
+        x=0
+    )
+)
+
+fig.update_xaxes(dtick=5)
+fig.update_yaxes(rangemode="tozero")
+
+st.plotly_chart(
+    fig,
+    use_container_width=True
+)
+
+
+# ==========================================
+# 10. 데이터 부족 및 그래프 해석 안내
+# ==========================================
+if is_low_data:
+    st.warning(
+        f"⚠️ {selected_region} 지역의 폐교 기록은 "
+        f"{record_count}개로, 예측에 필요한 데이터가 부족합니다. "
+        "선형회귀 결과는 참고용으로만 확인해주세요."
+    )
+
+st.info(
+    "그래프에서 폐교 학교 수가 0으로 표시된 연도는 "
+    "해당 연도의 폐교 기록이 데이터에 없다는 뜻입니다. "
+    "실제로 폐교 학교가 없었다는 의미는 아닙니다."
+)
+
+
+# ==========================================
+# 11. 선형회귀 모델 분석
+# ==========================================
+st.subheader("📉 선형회귀 모델 분석")
+
+slope = float(model.coef_[0])
+intercept = float(model.intercept_)
+
+# 데이터가 2개 이상일 때만 R² 계산
+if len(y) >= 2:
+    r_squared = float(model.score(X, y))
+else:
+    r_squared = None
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric(
+        "연간 폐교 학교 수 변화",
+        f"{slope:+.2f}개"
+    )
+
+with col2:
+    if r_squared is not None:
+        st.metric(
+            "결정계수 R²",
+            f"{r_squared:.3f}"
+        )
+    else:
+        st.metric(
+            "결정계수 R²",
+            "계산 불가"
+        )
+
+with col3:
+    st.metric(
+        "예측 마지막 연도",
+        f"{last_year + forecast_years}년"
+    )
+
+st.markdown(
+    f"""
+    **회귀식**
+
+    폐교 학교 수 = {slope:.4f} × 연도 + ({intercept:.4f})
+
+    **해석**
+
+    - 회귀계수가 양수이면 과거 폐교 학교 수가 증가하는 추세입니다.
+    - 회귀계수가 음수이면 과거 폐교 학교 수가 감소하는 추세입니다.
+    - R²는 과거 데이터에 대한 모델의 설명력을 나타냅니다.
+    """
+)
+
+if is_low_data:
+    st.warning(
+        "폐교 기록이 적어 예측 결과의 신뢰도가 낮을 수 있습니다. "
+        "실제 폐교 학교 수와 차이가 클 수 있으므로 "
+        "참고용으로만 활용해주세요."
+    )
+
+
+# ==========================================
+# 12. 미래 예측 결과 표
+# ==========================================
+st.subheader("🔮 미래 폐교 학교 수 예측")
+
+future_table = pd.DataFrame({
+    "예측 연도": future_years,
+    "예측 폐교 학교 수": np.round(
+        future_prediction
+    ).astype(int)
 })
 
-future_df["예측 폐교 수"] = model.predict(
-    future_df[["연도"]]
-)
-
-# 폐교 수는 음수가 될 수 없고, 실제 건수이므로 정수로 표시
-future_df["예측 폐교 수"] = (
-    future_df["예측 폐교 수"]
-    .clip(lower=0)
-    .round()
-    .astype(int)
+st.dataframe(
+    future_table,
+    use_container_width=True,
+    hide_index=True
 )
 
 
-# --------------------------------------------------
-# 모델 지표
-# --------------------------------------------------
-metric_col1, metric_col2 = st.columns(2)
+# ==========================================
+# 13. 연도별 폐교 학교 수 표
+# ==========================================
+st.subheader("📋 연도별 폐교 학교 수")
 
-metric_col1.metric(
-    "평균 절대 오차(MAE)",
-    f"{mae:.2f}개교",
-)
-
-if r2 is not None:
-    metric_col2.metric(
-        "결정계수(R²)",
-        f"{r2:.3f}",
+history_table = pd.DataFrame({
+    "연도": yearly_count.index,
+    "실제 폐교 학교 수": yearly_count.values,
+    "선형회귀 추세선": np.round(
+        np.maximum(historical_prediction, 0),
+        2
     )
-else:
-    metric_col2.metric(
-        "결정계수(R²)",
-        "계산 불가",
-    )
-
-
-# --------------------------------------------------
-# 과거 및 미래 예측 그래프
-# --------------------------------------------------
-historical_plot = yearly_df.rename(
-    columns={"폐교 수": "폐교 수"}
-).copy()
-
-historical_plot["구분"] = "과거 기록"
-future_plot = future_df.rename(
-    columns={"예측 폐교 수": "폐교 수"}
-).copy()
-
-future_plot["구분"] = "미래 예측"
-
-plot_df = pd.concat(
-    [
-        historical_plot[["연도", "폐교 수", "구분"]],
-        future_plot[["연도", "폐교 수", "구분"]],
-    ],
-    ignore_index=True,
-)
-
-fig_forecast = px.line(
-    plot_df,
-    x="연도",
-    y="폐교 수",
-    color="구분",
-    markers=True,
-    title=f"{selected_region} 폐교 수 예측",
-    labels={
-        "연도": "연도",
-        "폐교 수": "폐교 수",
-        "구분": "데이터 구분",
-    },
-)
-
-fig_forecast.update_layout(
-    xaxis=dict(dtick=1),
-    yaxis_title="폐교 수",
-)
-
-st.plotly_chart(fig_forecast, use_container_width=True)
-
-
-# --------------------------------------------------
-# 예측 결과 표
-# --------------------------------------------------
-st.subheader("📋 미래 폐교 수 예측 결과")
+})
 
 st.dataframe(
-    future_df,
+    history_table,
     use_container_width=True,
-    hide_index=True,
+    hide_index=True
 )
 
 
-# --------------------------------------------------
-# 과거 데이터 표
-# --------------------------------------------------
-st.subheader("📚 과거 연도별 폐교 수")
-
-st.dataframe(
-    yearly_df,
-    use_container_width=True,
-    hide_index=True,
-)
-
-
-# --------------------------------------------------
-# 선택 지역의 원본 폐교 기록
-# --------------------------------------------------
-with st.expander("선택 지역의 폐교 기록 확인"):
-    display_df = region_df[
-        ["지역", "교육청", "학교명", "학교급명", "폐교일자", "주소"]
-    ].sort_values("폐교일자")
-
+# ==========================================
+# 14. 원본 데이터 확인
+# ==========================================
+with st.expander("원본 폐교 데이터 확인"):
     st.dataframe(
-        display_df,
+        df,
         use_container_width=True,
-        hide_index=True,
+        hide_index=True
     )
 
 
-# --------------------------------------------------
-# 전체 지역별 데이터 결측률
-# --------------------------------------------------
-with st.expander("전체 지역별 결측률 확인"):
-    missing_summary = pd.DataFrame({
-        "지역": list(missing_by_region.keys()),
-        "결측률": list(missing_by_region.values()),
-    })
-
-    missing_summary["결측률"] = missing_summary["결측률"].map(
-        lambda value: f"{value:.1%}"
-    )
-
-    st.dataframe(
-        missing_summary,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
+# ==========================================
+# 15. 앱 하단 안내
+# ==========================================
 st.caption(
-    "데이터 출처: 한국교육학술정보원 학교알리미 폐교정보(2025년 9월 30일 기준). "
-    "예측은 과거 폐교 기록에 선형회귀를 적용한 참고용 추정치이며, 실제 폐교 수를 보장하지 않습니다."
+    "※ 이 앱은 2025년 9월 30일 기준 폐교 데이터로 분석합니다. "
+    "미래 예측은 과거 추세를 연장한 통계적 추정치이며, "
+    "실제 폐교 학교 수와 다를 수 있습니다."
 )

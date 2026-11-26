@@ -25,6 +25,11 @@ DATA_FILE = (
     / "한국교육학술정보원_학교알리미 폐교정보_20250930.csv"
 )
 
+POP_DATA_FILE = (
+    Path(__file__).parent
+    / "101_DT_1B26001_A01_20261126143534.csv"
+)
+
 MIN_RECORDS = 5
 
 
@@ -97,6 +102,68 @@ def load_data(file_path):
     return df
 
 
+@st.cache_data
+def load_population_net_migration(file_path):
+    """인구이동 CSV에서 시도별 연도별 순이동[명] 합계를 계산합니다."""
+    pop_df = pd.read_csv(file_path, encoding="cp949")
+
+    # '순이동[명]' 항목만 필터링
+    net_df = pop_df[pop_df["항목"] == "순이동[명]"].copy()
+
+    # 월별 컬럼(예: '1970.01 월') 추출
+    month_cols = [
+        col for col in net_df.columns
+        if "월" in str(col) and "." in str(col)
+    ]
+
+    # 지역명 매핑 (긴 행정구역명 -> 짧은 표기 & 긴 표기 모두 대응)
+    short_name_map = {
+        "서울특별시": "서울",
+        "부산광역시": "부산",
+        "대구광역시": "대구",
+        "인천광역시": "인천",
+        "광주광역시": "광주",
+        "대전광역시": "대전",
+        "울산광역시": "울산",
+        "세종특별자치시": "세종",
+        "경기도": "경기",
+        "강원특별자치도": "강원",
+        "강원도": "강원",
+        "충청북도": "충북",
+        "충청남도": "충남",
+        "전북특별자치도": "전북",
+        "전라북도": "전북",
+        "전라남도": "전남",
+        "경상북도": "경북",
+        "경상남도": "경남",
+        "제주특별자치도": "제주",
+        "제주도": "제주"
+    }
+
+    records = {}
+
+    for _, row in net_df.iterrows():
+        raw_region = str(row["행정구역(시군구)별"]).strip()
+
+        # 숫자 변환
+        values = pd.to_numeric(row[month_cols], errors="coerce")
+
+        # 연도 추출 후 연도별 합계 계산 (해당 연도 데이터가 전부 NaN이면 NaN 유지)
+        years = [int(str(col).split(".")[0]) for col in month_cols]
+        yearly_series = (
+            pd.Series(values.values, index=years)
+            .groupby(level=0)
+            .sum(min_count=1)
+        )
+
+        # 원본 지역명과 짧은 지역명 둘 다 딕셔너리에 저장해 매칭 오류 방지
+        records[raw_region] = yearly_series
+        if raw_region in short_name_map:
+            records[short_name_map[raw_region]] = yearly_series
+
+    return records
+
+
 if not DATA_FILE.exists():
     st.error("폐교 데이터 파일을 찾을 수 없습니다.")
     st.stop()
@@ -110,6 +177,14 @@ except Exception as e:
 if df.empty:
     st.error("분석할 데이터가 없습니다.")
     st.stop()
+
+# 인구 순이동 데이터 불러오기
+pop_net_dict = {}
+if POP_DATA_FILE.exists():
+    try:
+        pop_net_dict = load_population_net_migration(POP_DATA_FILE)
+    except Exception as e:
+        st.warning(f"인구 순이동 데이터를 불러오는 중 오류가 발생했습니다: {e}")
 
 
 # 전국 폐교 현황
@@ -233,6 +308,62 @@ fig.update_layout(
 fig.update_yaxes(rangemode="tozero")
 
 st.plotly_chart(fig, use_container_width=True)
+
+
+# ==========================================
+# 9-2. 연도별 인구 순이동(증감) 그래프
+# ==========================================
+st.subheader(f"👥 {selected_region} 연도별 인구 순이동 (전입 - 전출)")
+
+if not POP_DATA_FILE.exists():
+    st.info(
+        "인구 이동 CSV 파일(`101_DT_1B26001_A01_20261126143534.csv`)을 "
+        "main.py와 같은 폴더에 넣으면 연도별 인구 증감 그래프가 표시됩니다."
+    )
+elif selected_region in pop_net_dict:
+    region_net_series = pop_net_dict[selected_region].reindex(all_years)
+
+    # 양수(순유입)는 파랑/초록 계열, 음수(순유출)는 주황/빨강 계열 색상 지정
+    bar_colors = [
+        "#2E86AB" if (pd.notna(val) and val >= 0) else "#E06D53"
+        for val in region_net_series.values
+    ]
+
+    fig_pop = go.Figure()
+
+    fig_pop.add_trace(go.Bar(
+        x=region_net_series.index,
+        y=region_net_series.values,
+        name="연간 순이동 인구(명)",
+        marker_color=bar_colors
+    ))
+
+    # 0 기준선 추가
+    fig_pop.add_hline(
+        y=0,
+        line_width=1.5,
+        line_color="gray"
+    )
+
+    fig_pop.update_layout(
+        xaxis_title="연도",
+        yaxis_title="순이동 인구 수 (명)",
+        hovermode="x unified",
+        height=420
+    )
+
+    st.plotly_chart(fig_pop, use_container_width=True)
+
+    st.caption(
+        "※ 순이동 = 총전입 - 총전출 (양수: 타 지역에서 유입된 인구가 더 많음 / "
+        "음수: 타 지역으로 유출된 인구가 더 많음)"
+    )
+else:
+    st.warning(
+        f"인구 순이동 데이터에서 '{selected_region}' 지역 정보를 찾을 수 없습니다."
+    )
+
+
 # ==========================================
 # 10. 비슷한 폐교 추세 지역끼리 그룹화
 # ==========================================
@@ -598,7 +729,9 @@ else:
         "지역별 폐교 추세 패턴이 충분히 구분되지 않아 "
         "군집화를 진행할 수 없습니다."
     )
-    # ==========================================
+
+
+# ==========================================
 # 11. 데이터 부족 안내
 # ==========================================
 
@@ -661,9 +794,9 @@ st.markdown(
 
     **해석**
 
-    - 회귀계수가 양수이면 과거 폐교 학교 수가 증가하는 추세입니다.
-    - 회귀계수가 음수이면 과거 폐교 학교 수가 감소하는 추세입니다.
-    - R²는 과거 데이터에 대한 모델의 설명력을 나타냅니다.
+- 회귀계수가 양수이면 과거 폐교 학교 수가 증가하는 추세입니다.
+- 회귀계수가 음수이면 과거 폐교 학교 수가 감소하는 추세입니다.
+- R²는 과거 데이터에 대한 모델의 설명력을 나타냅니다.
     """
 )
 

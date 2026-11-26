@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,11 +6,6 @@ import plotly.graph_objects as go
 from sklearn.linear_model import LinearRegression
 from sklearn.cluster import KMeans
 from pathlib import Path
-
-
-# ==========================================
-# 1. 앱 기본 설정
-# ==========================================
 
 st.set_page_config(
     page_title="폐교 예측 분석",
@@ -34,13 +28,8 @@ DATA_FILE = (
 MIN_RECORDS = 5
 
 
-# ==========================================
-# 2. 데이터 불러오기
-# ==========================================
-
 @st.cache_data
 def load_data(file_path):
-
     df = pd.read_csv(
         file_path,
         encoding="cp949",
@@ -55,12 +44,8 @@ def load_data(file_path):
     })
 
     required_columns = [
-        "도",
-        "세부지역",
-        "학교 이름",
-        "학교급",
-        "폐교일자",
-        "주소"
+        "도", "세부지역", "학교 이름",
+        "학교급", "폐교일자", "주소"
     ]
 
     missing_columns = [
@@ -76,16 +61,10 @@ def load_data(file_path):
     df = df[required_columns].copy()
 
     for col in required_columns:
-        df[col] = (
-            df[col]
-            .astype("string")
-            .str.strip()
-        )
+        df[col] = df[col].astype("string").str.strip()
 
     date_text = (
         df["폐교일자"]
-        .astype("string")
-        .str.strip()
         .str.replace(r"\.0$", "", regex=True)
     )
 
@@ -95,10 +74,10 @@ def load_data(file_path):
         errors="coerce"
     )
 
-    remaining_dates = parsed_date.isna()
+    remaining = parsed_date.isna()
 
-    parsed_date.loc[remaining_dates] = pd.to_datetime(
-        date_text.loc[remaining_dates],
+    parsed_date.loc[remaining] = pd.to_datetime(
+        date_text.loc[remaining],
         errors="coerce"
     )
 
@@ -113,137 +92,76 @@ def load_data(file_path):
         (df["학교 이름"] != "")
     ].copy()
 
-    df["폐교연도"] = (
-        df["폐교일자"]
-        .dt.year
-        .astype(int)
-    )
+    df["폐교연도"] = df["폐교일자"].dt.year.astype(int)
 
     return df
 
 
-# ==========================================
-# 3. 데이터 자동 불러오기
-# ==========================================
-
 if not DATA_FILE.exists():
-
     st.error("폐교 데이터 파일을 찾을 수 없습니다.")
-
-    st.write(
-        "main.py와 CSV 파일이 같은 폴더에 있는지 확인해주세요."
-    )
-
-    st.code(
-        "main.py\n"
-        "한국교육학술정보원_학교알리미 폐교정보_20250930.csv"
-    )
-
     st.stop()
-
 
 try:
-
     df = load_data(DATA_FILE)
-
 except Exception as e:
-
-    st.error(
-        f"데이터를 불러오는 중 오류가 발생했습니다: {e}"
-    )
-
+    st.error(f"데이터 오류: {e}")
     st.stop()
-
 
 if df.empty:
-
-    st.error("분석할 수 있는 폐교 데이터가 없습니다.")
-
+    st.error("분석할 데이터가 없습니다.")
     st.stop()
 
 
-# ==========================================
-# 4. 전국 폐교 현황
-# ==========================================
-
+# 전국 폐교 현황
 st.subheader("📊 전국 폐교 현황")
 
 col1, col2, col3 = st.columns(3)
 
-with col1:
-    st.metric("전체 폐교 학교 수", f"{len(df):,}개")
-
-with col2:
-    st.metric("분석 대상 지역", f"{df['도'].nunique()}개")
-
-with col3:
-    st.metric(
-        "폐교 기록 기간",
-        f"{df['폐교연도'].min()}~{df['폐교연도'].max()}년"
-    )
+col1.metric("전체 폐교 학교 수", f"{len(df):,}개")
+col2.metric("분석 대상 지역", f"{df['도'].nunique()}개")
+col3.metric(
+    "폐교 기록 기간",
+    f"{df['폐교연도'].min()}~{df['폐교연도'].max()}년"
+)
 
 
-# ==========================================
-# 5. 분석 조건 설정
-# ==========================================
-
+# 분석 조건
 st.subheader("🔎 분석 조건")
 
 col1, col2 = st.columns(2)
 
-with col1:
-    regions = sorted(df["도"].dropna().unique().tolist())
+regions = sorted(df["도"].dropna().unique().tolist())
 
-    selected_region = st.selectbox(
-        "분석할 지역 선택",
-        regions
-    )
+selected_region = col1.selectbox(
+    "분석할 지역 선택",
+    regions
+)
 
-with col2:
-    forecast_years = st.slider(
-        "미래 예측 기간",
-        min_value=1,
-        max_value=20,
-        value=5,
-        step=1
-    )
-
+forecast_years = col2.slider(
+    "미래 예측 기간",
+    1, 20, 5
+)
 
 region_df = df[df["도"] == selected_region].copy()
 
 record_count = len(region_df)
-
 is_low_data = record_count < MIN_RECORDS
-
-
-# ==========================================
-# 6. 연도별 폐교 학교 수 계산
-# ==========================================
 
 first_year = int(df["폐교연도"].min())
 last_year = int(df["폐교연도"].max())
 
-yearly_count = (
-    region_df
-    .groupby("폐교연도")
-    .size()
-    .sort_index()
-)
-
 all_years = np.arange(first_year, last_year + 1)
 
-yearly_count = yearly_count.reindex(
-    all_years,
-    fill_value=0
+yearly_count = (
+    region_df.groupby("폐교연도")
+    .size()
+    .reindex(all_years, fill_value=0)
 )
 
 yearly_count.index.name = "연도"
 
 
-# ==========================================
-# 7. 선형회귀 모델 생성
-# ==========================================
-
+# 선형회귀
 X = yearly_count.index.to_numpy().reshape(-1, 1)
 y = yearly_count.to_numpy()
 
@@ -257,102 +175,64 @@ future_years = np.arange(
     last_year + forecast_years + 1
 )
 
-future_prediction = model.predict(
-    future_years.reshape(-1, 1)
-)
-
 future_prediction = np.maximum(
-    future_prediction,
+    model.predict(future_years.reshape(-1, 1)),
     0
 )
 
 
-# ==========================================
-# 8. 지역별 통계
-# ==========================================
-
+# 지역별 통계
 total_closed = len(region_df)
 average_closed = yearly_count.mean()
 peak_year = int(yearly_count.idxmax())
-peak_count = int(yearly_count.max())
-
 future_total = int(np.round(future_prediction.sum()))
 
 col1, col2, col3, col4 = st.columns(4)
 
-with col1:
-    st.metric("누적 폐교 학교 수", f"{total_closed:,}개")
-
-with col2:
-    st.metric("연평균 폐교 학교 수", f"{average_closed:.1f}개")
-
-with col3:
-    st.metric("폐교가 가장 많았던 연도", f"{peak_year}년")
-
-with col4:
-    st.metric("예측 기간 폐교 학교 수", f"{future_total:,}개")
+col1.metric("누적 폐교 학교 수", f"{total_closed:,}개")
+col2.metric("연평균 폐교 학교 수", f"{average_closed:.1f}개")
+col3.metric("폐교가 가장 많았던 연도", f"{peak_year}년")
+col4.metric("예측 기간 폐교 학교 수", f"{future_total:,}개")
 
 
-# ==========================================
-# 9. 폐교 학교 수 그래프
-# ==========================================
-
+# 지역별 그래프
 st.subheader(f"📈 {selected_region} 연도별 폐교 학교 수")
 
 fig = go.Figure()
 
-fig.add_trace(
-    go.Scatter(
-        x=yearly_count.index,
-        y=yearly_count.values,
-        mode="lines+markers",
-        name="실제 폐교 학교 수",
-        line=dict(width=2),
-        marker=dict(size=6)
-    )
-)
+fig.add_trace(go.Scatter(
+    x=yearly_count.index,
+    y=yearly_count.values,
+    mode="lines+markers",
+    name="실제 폐교 학교 수"
+))
 
-fig.add_trace(
-    go.Scatter(
-        x=yearly_count.index,
-        y=np.maximum(historical_prediction, 0),
-        mode="lines",
-        name="선형회귀 추세선",
-        line=dict(color="red", width=2, dash="dash")
-    )
-)
+fig.add_trace(go.Scatter(
+    x=yearly_count.index,
+    y=np.maximum(historical_prediction, 0),
+    mode="lines",
+    name="선형회귀 추세선",
+    line=dict(color="red", dash="dash")
+))
 
-fig.add_trace(
-    go.Scatter(
-        x=future_years,
-        y=future_prediction,
-        mode="lines+markers",
-        name="미래 예측",
-        line=dict(color="green", width=3, dash="dot"),
-        marker=dict(size=8)
-    )
-)
+fig.add_trace(go.Scatter(
+    x=future_years,
+    y=future_prediction,
+    mode="lines+markers",
+    name="미래 예측",
+    line=dict(color="green", dash="dot")
+))
 
 fig.update_layout(
     xaxis_title="연도",
     yaxis_title="폐교 학교 수",
     hovermode="x unified",
-    height=500,
-    legend=dict(
-        orientation="h",
-        yanchor="bottom",
-        y=1.02,
-        xanchor="left",
-        x=0
-    )
+    height=500
 )
 
-fig.update_xaxes(dtick=5)
 fig.update_yaxes(rangemode="tozero")
 
 st.plotly_chart(fig, use_container_width=True)
-
-
 # ==========================================
 # 10. 비슷한 폐교 추세 지역끼리 그룹화
 # ==========================================
@@ -389,14 +269,17 @@ unique_patterns = np.unique(
 
 if len(unique_patterns) >= 2:
 
-    max_clusters = min(8, len(unique_patterns))
+    max_clusters = min(
+        8,
+        len(unique_patterns),
+        len(region_patterns)
+    )
 
     cluster_count = st.slider(
         "군집 개수 선택",
         min_value=2,
         max_value=max_clusters,
-        value=min(4, max_clusters),
-        step=1
+        value=min(4, max_clusters)
     )
 
     kmeans = KMeans(
@@ -427,14 +310,12 @@ if len(unique_patterns) >= 2:
 
     col1, col2 = st.columns(2)
 
-    with col1:
-        st.metric("전체 군집 수", f"{cluster_count}개")
+    col1.metric("전체 군집 수", f"{cluster_count}개")
 
-    with col2:
-        st.metric(
-            "선택 지역과 같은 군집",
-            f"{len(similar_regions)}개 지역"
-        )
+    col2.metric(
+        "선택 지역과 같은 군집",
+        f"{len(similar_regions)}개 지역"
+    )
 
     st.success(
         f"{selected_region}은 {selected_cluster}번 군집에 속합니다."
@@ -444,7 +325,7 @@ if len(unique_patterns) >= 2:
 
     st.write(", ".join(similar_regions))
 
-    # 군집별 평균 폐교 발생 비율 그래프
+    # 군집별 평균 그래프
     st.markdown("### 📈 군집별 평균 폐교 추세 비교")
 
     fig_cluster = go.Figure()
@@ -459,57 +340,199 @@ if len(unique_patterns) >= 2:
             region_patterns.loc[members].mean(axis=0) * 100
         )
 
-        fig_cluster.add_trace(
-            go.Scatter(
-                x=all_years,
-                y=cluster_mean.values,
-                mode="lines+markers",
-                name=f"{cluster_num}번 군집 ({len(members)}개 지역)",
-                line=dict(width=2),
-                marker=dict(size=5)
-            )
-        )
+        fig_cluster.add_trace(go.Scatter(
+            x=all_years,
+            y=cluster_mean.values,
+            mode="lines+markers",
+            name=f"{cluster_num}번 군집 평균"
+        ))
 
-    # 선택 지역 강조
     selected_pattern = (
         region_patterns.loc[selected_region] * 100
     )
 
-    fig_cluster.add_trace(
-        go.Scatter(
-            x=all_years,
-            y=selected_pattern.values,
-            mode="lines",
-            name=f"{selected_region} (선택 지역)",
-            line=dict(
-                color="black",
-                width=4,
-                dash="dash"
-            )
-        )
-    )
+    fig_cluster.add_trace(go.Scatter(
+        x=all_years,
+        y=selected_pattern.values,
+        mode="lines",
+        name=f"{selected_region} 선택 지역",
+        line=dict(color="black", width=4, dash="dash")
+    ))
 
     fig_cluster.update_layout(
         xaxis_title="연도",
         yaxis_title="폐교 발생 비율 (%)",
         hovermode="x unified",
-        height=500,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0
-        )
+        height=500
     )
-
-    fig_cluster.update_xaxes(dtick=5)
-    fig_cluster.update_yaxes(rangemode="tozero")
 
     st.plotly_chart(
         fig_cluster,
         use_container_width=True
     )
+
+    # 군집별 실제 지역 그래프
+    st.markdown("### 🔍 군집별 실제 지역 그래프 비교")
+
+    st.write(
+        "각 지역의 실제 폐교 발생 비율을 한 그래프에 표시합니다. "
+        "검은색 굵은 점선은 해당 군집의 평균 그래프입니다."
+    )
+
+    for cluster_num in range(1, cluster_count + 1):
+
+        members = cluster_df[
+            cluster_df["군집"] == cluster_num
+        ]["지역"].tolist()
+
+        if not members:
+            continue
+
+        with st.expander(
+            f"{cluster_num}번 군집 실제 그래프 비교 "
+            f"({len(members)}개 지역)",
+            expanded=(cluster_num == selected_cluster)
+        ):
+
+            cluster_mean = (
+                region_patterns.loc[members].mean(axis=0)
+            )
+
+            fig_compare = go.Figure()
+
+            # 각 지역의 실제 그래프
+            for region in members:
+
+                region_values = region_patterns.loc[region]
+
+                fig_compare.add_trace(go.Scatter(
+                    x=all_years,
+                    y=region_values.values * 100,
+                    mode="lines+markers",
+                    name=region,
+                    line=dict(width=1.5),
+                    marker=dict(size=3),
+                    opacity=0.7
+                ))
+
+            # 군집 평균
+            fig_compare.add_trace(go.Scatter(
+                x=all_years,
+                y=cluster_mean.values * 100,
+                mode="lines",
+                name="군집 평균",
+                line=dict(
+                    color="black",
+                    width=5,
+                    dash="dash"
+                )
+            ))
+
+            fig_compare.update_layout(
+                title=f"{cluster_num}번 군집 지역별 폐교 추세",
+                xaxis_title="연도",
+                yaxis_title="폐교 발생 비율 (%)",
+                hovermode="x unified",
+                height=550
+            )
+
+            st.plotly_chart(
+                fig_compare,
+                use_container_width=True
+            )
+
+            # 유사도 계산
+            st.markdown("#### 📐 군집 평균과 지역별 유사도")
+
+            similarity_results = []
+
+            for region in members:
+
+                region_values = region_patterns.loc[region]
+
+                if (
+                    region_values.std() == 0
+                    or cluster_mean.std() == 0
+                ):
+                    similarity = np.nan
+                else:
+                    similarity = region_values.corr(
+                        cluster_mean
+                    )
+
+                similarity_results.append({
+                    "지역": region,
+                    "군집 평균과의 상관계수": similarity
+                })
+
+            similarity_df = pd.DataFrame(
+                similarity_results
+            )
+
+            similarity_df = similarity_df.sort_values(
+                "군집 평균과의 상관계수",
+                ascending=False,
+                na_position="last"
+            )
+
+            valid_similarity = similarity_df[
+                "군집 평균과의 상관계수"
+            ].dropna()
+
+            if len(valid_similarity) > 0:
+
+                average_similarity = valid_similarity.mean()
+
+                valid_df = similarity_df.dropna(
+                    subset=["군집 평균과의 상관계수"]
+                )
+
+                most_similar = valid_df.iloc[0]
+                least_similar = valid_df.iloc[-1]
+
+                col1, col2, col3 = st.columns(3)
+
+                col1.metric(
+                    "군집 평균 유사도",
+                    f"{average_similarity:.3f}"
+                )
+
+                col2.metric(
+                    "가장 비슷한 지역",
+                    most_similar["지역"]
+                )
+
+                col3.metric(
+                    "가장 차이가 큰 지역",
+                    least_similar["지역"]
+                )
+
+                st.info(
+                    "상관계수가 1에 가까울수록 군집 평균과 "
+                    "비슷한 변화 패턴을 의미합니다. "
+                    "0에 가까우면 선형적 유사성이 낮고, "
+                    "음수이면 반대 방향의 경향을 보입니다."
+                )
+
+            else:
+
+                st.warning(
+                    "상관계수를 계산할 수 있는 데이터가 부족합니다."
+                )
+
+            similarity_df[
+                "군집 평균과의 상관계수"
+            ] = similarity_df[
+                "군집 평균과의 상관계수"
+            ].round(3)
+
+            st.markdown("#### 📋 지역별 유사도 순위")
+
+            st.dataframe(
+                similarity_df,
+                use_container_width=True,
+                hide_index=True
+            )
 
     # 군집별 지역 목록
     st.markdown("### 📋 군집별 지역 목록")
@@ -544,7 +567,7 @@ if len(unique_patterns) >= 2:
                 hide_index=True
             )
 
-    # 전체 군집 결과
+    # 전체 군집 분류 결과
     st.markdown("### 📊 전체 지역 군집 분류 결과")
 
     cluster_result = cluster_df.sort_values(
@@ -575,9 +598,7 @@ else:
         "지역별 폐교 추세 패턴이 충분히 구분되지 않아 "
         "군집화를 진행할 수 없습니다."
     )
-
-
-# ==========================================
+    # ==========================================
 # 11. 데이터 부족 안내
 # ==========================================
 
@@ -597,6 +618,7 @@ if is_low_data:
 st.subheader("📉 선형회귀 모델 분석")
 
 slope = float(model.coef_[0])
+
 intercept = float(model.intercept_)
 
 if len(y) >= 2:
@@ -613,13 +635,17 @@ with col1:
     )
 
 with col2:
+
     if r_squared is not None:
         st.metric(
             "결정계수 R²",
             f"{r_squared:.3f}"
         )
     else:
-        st.metric("결정계수 R²", "계산 불가")
+        st.metric(
+            "결정계수 R²",
+            "계산 불가"
+        )
 
 with col3:
     st.metric(
@@ -642,9 +668,11 @@ st.markdown(
 )
 
 if is_low_data:
+
     st.warning(
         "폐교 기록이 적어 예측 결과의 신뢰도가 낮을 수 있습니다. "
-        "실제 폐교 학교 수와 차이가 클 수 있으므로 참고용으로만 활용해주세요."
+        "실제 폐교 학교 수와 차이가 클 수 있으므로 "
+        "참고용으로만 활용해주세요."
     )
 
 
@@ -712,5 +740,6 @@ st.caption(
     "미래 예측은 과거 추세를 연장한 통계적 추정치이며, "
     "실제 폐교 학교 수와 다를 수 있습니다. "
     "군집 분석은 지역별 연도별 폐교 발생 비율을 기준으로 "
-    "유사한 추세를 분류한 결과입니다."
+    "유사한 추세를 분류한 결과입니다. "
+    "군집별 유사도는 상관계수를 이용해 계산합니다."
 )
